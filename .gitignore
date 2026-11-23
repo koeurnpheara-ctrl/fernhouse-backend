@@ -1,0 +1,12 @@
+node_modules/
+.env
+*.log
+.DS_Store
+.vscode/
+# Uploaded images and SSL certificates stay on the server
+uploads/*
+!uploads/.gitkeep
+certbot/conf/*
+!certbot/conf/.gitkeep
+certbot/www/*
+!certbot/www/.gitkeep

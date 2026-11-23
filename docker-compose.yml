@@ -1,0 +1,113 @@
+# Fernhouse - full stack: Nginx -> (Vue frontend, Express API) -> MongoDB
+# Start everything with:  docker compose up -d --build
+name: fernhouse
+
+services:
+  mongodb:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-fernadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?Set MONGO_ROOT_PASSWORD in .env}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-fernhouse}
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      - db_net # private network: no internet, no published ports
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  backend:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGO_URI: mongodb://${MONGO_ROOT_USER:-fernadmin}:${MONGO_ROOT_PASSWORD}@mongodb:27017/${MONGO_DB_NAME:-fernhouse}?authSource=admin
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-7d}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      UPLOAD_DIR: uploads
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-5}
+      ADMIN_NAME: ${ADMIN_NAME:-Site Admin}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD in .env}
+      SEED_SAMPLE_DATA: ${SEED_SAMPLE_DATA:-true}
+    volumes:
+      - uploads_data:/app/uploads
+    ports:
+      - "127.0.0.1:${BACKEND_LOCAL_PORT:-5000}:5000" # only reachable from this machine
+    networks:
+      - db_net
+      - web_net
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  frontend:
+    build:
+      context: ../fernhouse-frontend  # the frontend repo, cloned next to this one
+      args:
+        # Baked into the JavaScript at build time. Rebuild after changing it.
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:5000/api}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${FRONTEND_LOCAL_PORT:-8080}:80"
+    networks:
+      - web_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certbot/conf:/etc/letsencrypt:ro
+      - ./certbot/www:/var/www/certbot:ro
+    networks:
+      - web_net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # Only used to get/renew HTTPS certificates:  docker compose --profile tools run --rm certbot ...
+  certbot:
+    image: certbot/certbot
+    profiles: ["tools"]
+    volumes:
+      - ./certbot/conf:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+
+networks:
+  db_net:
+    internal: true
+  web_net:
+
+volumes:
+  mongo_data:
+  uploads_data:
